@@ -7,12 +7,13 @@
 
 ESP8266WebServer server(80);
 
-uint8_t receiverMAC[] = {0xC4, 0xD8, 0xD5, 0x2D, 0xC6, 0xA2};  // Replace with your ESP-NOW receiver MAC
+// Broadcast MAC Address - ส่งไปทุก Node ที่รอรับ
+uint8_t broadcastMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// Structure for ESP-NOW data
+// Structure for ESP-NOW data (ใช้ char array แทน String สำหรับ ESP-NOW)
 typedef struct struct_message {
-  String time;
-  String blood;
+  char time[6];    // "HH:MM" + null terminator
+  char blood[10];  // ค่าน้ำตาล + null terminator
 } struct_message;
 
 struct_message myData;
@@ -63,7 +64,7 @@ void handleRoot() {
                 "  display: flex;"
                 "  justify-content: center;"
                 "  align-items: center;"
-                "  height: 100vh;"
+                "  min-height: 100vh;"
                 "  margin: 0;"
                 "  background-color: #f4f4f4;"
                 "  color: #333;"
@@ -133,6 +134,10 @@ void handleRoot() {
                 ".control-button:hover {"
                 "  background-color: #27ae60;"
                 "}"
+                ".control-button:disabled {"
+                "  background-color: #95a5a6;"
+                "  cursor: not-allowed;"
+                "}"
                 ".time-input {"
                 "  width: 100%;"
                 "  padding: 10px;"
@@ -140,16 +145,178 @@ void handleRoot() {
                 "  font-size: 22px;"
                 "  border: 1px solid #ddd;"
                 "  border-radius: 5px;"
+                "  box-sizing: border-box;"
                 "}"
                 ".control-buttons {"
                 "  display: flex;"
                 "  gap: 10px;"
+                "}"
+                ".status-bar {"
+                "  padding: 10px;"
+                "  margin: 10px 0;"
+                "  border-radius: 8px;"
+                "  font-size: 16px;"
+                "  font-weight: bold;"
+                "  display: none;"
+                "}"
+                ".status-sending {"
+                "  background-color: #f39c12;"
+                "  color: white;"
+                "}"
+                ".status-success {"
+                "  background-color: #27ae60;"
+                "  color: white;"
+                "}"
+                ".status-error {"
+                "  background-color: #e74c3c;"
+                "  color: white;"
+                "}"
+                ".history-section {"
+                "  margin-top: 20px;"
+                "  text-align: left;"
+                "}"
+                ".history-title {"
+                "  font-size: 16px;"
+                "  font-weight: bold;"
+                "  color: #666;"
+                "  margin-bottom: 10px;"
+                "}"
+                ".history-list {"
+                "  max-height: 150px;"
+                "  overflow-y: auto;"
+                "}"
+                ".history-item {"
+                "  background-color: #f8f9fa;"
+                "  padding: 8px 12px;"
+                "  margin: 5px 0;"
+                "  border-radius: 5px;"
+                "  font-size: 14px;"
+                "  display: flex;"
+                "  justify-content: space-between;"
+                "}"
+                ".history-blood {"
+                "  font-weight: bold;"
+                "  color: #e74c3c;"
+                "}"
+                ".history-time {"
+                "  color: #666;"
+                "}"
+                ".preset-section {"
+                "  margin: 15px 0;"
+                "}"
+                ".preset-title {"
+                "  font-size: 14px;"
+                "  color: #666;"
+                "  margin-bottom: 8px;"
+                "}"
+                ".preset-buttons {"
+                "  display: flex;"
+                "  gap: 8px;"
+                "  flex-wrap: wrap;"
+                "  justify-content: center;"
+                "}"
+                ".preset-button {"
+                "  padding: 10px 15px;"
+                "  font-size: 16px;"
+                "  border: 2px solid #9b59b6;"
+                "  border-radius: 20px;"
+                "  background-color: white;"
+                "  color: #9b59b6;"
+                "  cursor: pointer;"
+                "  transition: all 0.2s ease;"
+                "}"
+                ".preset-button:hover {"
+                "  background-color: #9b59b6;"
+                "  color: white;"
+                "}"
+                ".time-row {"
+                "  display: flex;"
+                "  gap: 10px;"
+                "  margin: 10px 0;"
+                "}"
+                ".time-row .time-input {"
+                "  flex: 1;"
+                "  margin: 0;"
+                "}"
+                ".now-button {"
+                "  padding: 10px 20px;"
+                "  font-size: 16px;"
+                "  border: none;"
+                "  border-radius: 5px;"
+                "  background-color: #3498db;"
+                "  color: white;"
+                "  cursor: pointer;"
+                "}"
+                ".now-button:hover {"
+                "  background-color: #2980b9;"
+                "}"
+                ".modal-overlay {"
+                "  display: none;"
+                "  position: fixed;"
+                "  top: 0;"
+                "  left: 0;"
+                "  width: 100%;"
+                "  height: 100%;"
+                "  background-color: rgba(0,0,0,0.5);"
+                "  justify-content: center;"
+                "  align-items: center;"
+                "  z-index: 1000;"
+                "}"
+                ".modal-content {"
+                "  background-color: white;"
+                "  padding: 30px;"
+                "  border-radius: 15px;"
+                "  text-align: center;"
+                "  max-width: 350px;"
+                "}"
+                ".modal-title {"
+                "  font-size: 20px;"
+                "  font-weight: bold;"
+                "  margin-bottom: 15px;"
+                "}"
+                ".modal-info {"
+                "  font-size: 24px;"
+                "  margin: 20px 0;"
+                "  padding: 15px;"
+                "  background-color: #f8f9fa;"
+                "  border-radius: 10px;"
+                "}"
+                ".modal-info .value {"
+                "  color: #e74c3c;"
+                "  font-weight: bold;"
+                "}"
+                ".modal-info .time {"
+                "  color: #666;"
+                "  font-size: 18px;"
+                "}"
+                ".modal-buttons {"
+                "  display: flex;"
+                "  gap: 15px;"
+                "  margin-top: 20px;"
+                "}"
+                ".modal-btn {"
+                "  flex: 1;"
+                "  padding: 12px;"
+                "  font-size: 18px;"
+                "  border: none;"
+                "  border-radius: 8px;"
+                "  cursor: pointer;"
+                "}"
+                ".modal-btn-confirm {"
+                "  background-color: #2ecc71;"
+                "  color: white;"
+                "}"
+                ".modal-btn-cancel {"
+                "  background-color: #e74c3c;"
+                "  color: white;"
                 "}"
                 "</style>"
                 "</head>"
                 "<body>"
                 "<div class='container'>"
                 "<div class='app-title'>Blood Glucose Level Measurement</div>"
+                
+                "<div id='statusBar' class='status-bar'></div>"
                 
                 "<div class='result-display'>"
                 "<span id='displayValue'>0</span>"
@@ -168,23 +335,59 @@ void handleRoot() {
                 "<button class='number-button' onclick='addNumber(9)'>9</button>"
                 "<button class='number-button' onclick='addDecimal()'>.</button>"
                 "<button class='number-button' onclick='addNumber(0)'>0</button>"
-                "<button class='number-button' onclick='backspace()'>⌫</button>"
+                "<button class='number-button' onclick='backspace()'>&#9003;</button>"
+                "</div>"
+                
+                "<div class='preset-section'>"
+                "<div class='preset-title'>Quick Preset</div>"
+                "<div class='preset-buttons'>"
+                "<button class='preset-button' onclick='setPreset(70)'>70</button>"
+                "<button class='preset-button' onclick='setPreset(100)'>100</button>"
+                "<button class='preset-button' onclick='setPreset(120)'>120</button>"
+                "<button class='preset-button' onclick='setPreset(150)'>150</button>"
+                "<button class='preset-button' onclick='setPreset(200)'>200</button>"
+                "</div>"
+                "</div>"
+                
+                "<div class='time-row'>"
+                "<input type='text' id='timeInput' class='time-input' placeholder='Lab Time (HH:MM)' pattern='[0-9]{2}:[0-9]{2}'>"
+                "<button class='now-button' onclick='setCurrentTime()'>NOW</button>"
                 "</div>"
                 
                 "<div class='control-buttons'>"
-                "<button class='control-button' onclick='sendMeasurement()'>SEND</button>"
-                "<button class='control-button' onclick='showMeasurement()'>SHOW</button>"
+                "<button id='sendBtn' class='control-button' onclick='sendMeasurement()'>SEND</button>"
                 "<button class='control-button' onclick='clearMeasurement()'>CLEAR</button>"
                 "</div>"
                 
-                "<input type='text' id='timeInput' class='time-input' placeholder='Lab Time (HH:MM)' pattern='[0-9]{2}:[0-9]{2}'>"
+                "<div class='history-section'>"
+                "<div class='history-title'>Recent History (Last 5)</div>"
+                "<div id='historyList' class='history-list'></div>"
+                "</div>"
                 
+                "</div>"
+                
+                "<div id='confirmModal' class='modal-overlay'>"
+                "<div class='modal-content'>"
+                "<div class='modal-title'>Confirm Send?</div>"
+                "<div class='modal-info'>"
+                "<div class='value' id='modalBlood'></div>"
+                "<div class='time' id='modalTime'></div>"
+                "</div>"
+                "<div class='modal-buttons'>"
+                "<button class='modal-btn modal-btn-cancel' onclick='cancelSend()'>CANCEL</button>"
+                "<button class='modal-btn modal-btn-confirm' onclick='confirmSend()'>CONFIRM</button>"
+                "</div>"
+                "</div>"
                 "</div>"
                 
                 "<script>"
                 "let enteredNumber = '0';"
+                "let history = [];"
                 "const displayValue = document.getElementById('displayValue');"
                 "const timeInput = document.getElementById('timeInput');"
+                "const statusBar = document.getElementById('statusBar');"
+                "const sendBtn = document.getElementById('sendBtn');"
+                "const historyList = document.getElementById('historyList');"
                 
                 "function addNumber(num) {"
                 "  if (enteredNumber.length < 5) {"
@@ -215,6 +418,58 @@ void handleRoot() {
                 "function clearMeasurement() {"
                 "  enteredNumber = '0';"
                 "  updateDisplay();"
+                "  hideStatus();"
+                "}"
+                
+                "function setPreset(value) {"
+                "  enteredNumber = value.toString();"
+                "  updateDisplay();"
+                "}"
+                
+                "function setCurrentTime() {"
+                "  const now = new Date();"
+                "  const hours = String(now.getHours()).padStart(2, '0');"
+                "  const minutes = String(now.getMinutes()).padStart(2, '0');"
+                "  timeInput.value = hours + ':' + minutes;"
+                "}"
+                
+                "function showModal() {"
+                "  document.getElementById('modalBlood').textContent = enteredNumber + ' mg/dL';"
+                "  document.getElementById('modalTime').textContent = timeInput.value;"
+                "  document.getElementById('confirmModal').style.display = 'flex';"
+                "}"
+                
+                "function hideModal() {"
+                "  document.getElementById('confirmModal').style.display = 'none';"
+                "}"
+                
+                "function cancelSend() {"
+                "  hideModal();"
+                "}"
+                
+                "function showStatus(message, type) {"
+                "  statusBar.textContent = message;"
+                "  statusBar.className = 'status-bar status-' + type;"
+                "  statusBar.style.display = 'block';"
+                "}"
+                
+                "function hideStatus() {"
+                "  statusBar.style.display = 'none';"
+                "}"
+                
+                "function addToHistory(blood, time) {"
+                "  history.unshift({blood: blood, time: time});"
+                "  if (history.length > 5) history.pop();"
+                "  renderHistory();"
+                "}"
+                
+                "function renderHistory() {"
+                "  historyList.innerHTML = history.map(item => "
+                "    '<div class=\"history-item\">' +"
+                "    '<span class=\"history-blood\">' + item.blood + ' mg/dL</span>' +"
+                "    '<span class=\"history-time\">' + item.time + '</span>' +"
+                "    '</div>'"
+                "  ).join('');"
                 "}"
                 
                 "function sendMeasurement() {"
@@ -222,14 +477,26 @@ void handleRoot() {
                 "  const labTime = timeInput.value;"
                 
                 "  if (bloodValue === '0' || bloodValue === '') {"
-                "    alert('Please enter a valid glucose level.');"
+                "    showStatus('Please enter a valid glucose level.', 'error');"
                 "    return;"
                 "  }"
                 
                 "  if (!labTime) {"
-                "    alert('Please enter lab time.');"
+                "    showStatus('Please enter lab time.', 'error');"
                 "    return;"
                 "  }"
+                
+                "  showModal();"
+                "}"
+                
+                "function confirmSend() {"
+                "  hideModal();"
+                "  const bloodValue = enteredNumber;"
+                "  const labTime = timeInput.value;"
+                
+                "  showStatus('Sending...', 'sending');"
+                "  sendBtn.disabled = true;"
+                "  sendBtn.textContent = 'SENDING...';"
                 
                 "  fetch('/submit', {"
                 "    method: 'POST',"
@@ -240,15 +507,19 @@ void handleRoot() {
                 "  })"
                 "  .then(response => response.text())"
                 "  .then(data => {"
-                "    alert('Measurement Saved');"
+                "    showStatus('Sent Successfully \\u2713', 'success');"
+                "    addToHistory(bloodValue, labTime);"
+                "    enteredNumber = '0';"
+                "    timeInput.value = '';"
+                "    updateDisplay();"
+                "    sendBtn.disabled = false;"
+                "    sendBtn.textContent = 'SEND';"
                 "  })"
                 "  .catch(error => {"
-                "    alert('Error: ' + error);"
+                "    showStatus('Error: ' + error, 'error');"
+                "    sendBtn.disabled = false;"
+                "    sendBtn.textContent = 'SEND';"
                 "  });"
-                "}"
-                
-                "function showMeasurement() {"
-                "  displayValue.textContent = enteredNumber;"
                 "}"
                 
                 "function updateDisplay() {"
@@ -281,8 +552,11 @@ void handleSubmit() {
       return;
     }
 
-    myData.blood = bloodStr;
-    myData.time = timeStr;
+    // Copy ค่าไปใส่ char array
+    strncpy(myData.blood, bloodStr.c_str(), sizeof(myData.blood) - 1);
+    myData.blood[sizeof(myData.blood) - 1] = '\0';
+    strncpy(myData.time, timeStr.c_str(), sizeof(myData.time) - 1);
+    myData.time[sizeof(myData.time) - 1] = '\0';
 
     Serial.printf("Received Data -> Blood: %s, Lab Time: %s\n", myData.blood, myData.time);
 
@@ -317,7 +591,7 @@ bool isValidTimeFormat(String timeStr) {
 }
 
 void switchToESPNow() {
-  Serial.println("\nSwitching to ESP-NOW Mode...");
+  Serial.println("\nSwitching to ESP-NOW Mode (Broadcast)...");
   server.stop();
   WiFi.disconnect();
   WiFi.mode(WIFI_STA);
@@ -329,16 +603,19 @@ void switchToESPNow() {
 
   esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
   esp_now_register_send_cb(OnDataSent);
-  esp_now_add_peer(receiverMAC, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
+  
+  // Add broadcast peer - ส่งไปทุก Node
+  esp_now_add_peer(broadcastMAC, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
 
   sendData();
 }
 
 void sendData() {
+  Serial.println("Broadcasting to all Nodes...");
   Serial.printf("Sending ESP-NOW Data -> Blood: %s, Lab Time: %s\n", myData.blood, myData.time);
-  esp_now_send(receiverMAC, (uint8_t *) &myData, sizeof(myData));
+  esp_now_send(broadcastMAC, (uint8_t *) &myData, sizeof(myData));
 
-  Serial.println("Data Sent! Restarting ESP...");
+  Serial.println("Data Broadcast Sent! Restarting ESP...");
   delay(3000);
   ESP.restart();
 }

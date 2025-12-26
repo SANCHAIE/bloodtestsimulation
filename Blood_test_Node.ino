@@ -40,9 +40,10 @@ const char* password = "Hi@0824191956";
   WebServer server(80);
 #endif
 
+// Structure for ESP-NOW data (ต้องตรงกับ Server)
 typedef struct struct_message {
-    String time;
-    String blood;
+    char time[6];    // "HH:MM" + null terminator
+    char blood[10];  // ค่าน้ำตาล + null terminator
 } struct_message;
 
 struct_message myData;
@@ -281,6 +282,15 @@ void setup()
 {
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
+  
+  // แสดง MAC Address สำหรับ ESP-NOW
+  Serial.println();
+  Serial.println("========================================");
+  Serial.print("Node MAC Address: ");
+  Serial.println(WiFi.macAddress());
+  Serial.println("========================================");
+  Serial.println("Copy this MAC to Blood_test_Server.ino");
+  Serial.println();
   if (esp_now_init() != 0) {
     Serial.println("Error initializing ESP-NOW");
     return;
@@ -317,9 +327,9 @@ void OnDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
   data_in = true;
   Serial.print("Bytes received: ");
   Serial.println(len);
-  Serial.print("Int: ");
+  Serial.print("Blood: ");
   Serial.println(myData.blood);
-  Serial.print("String: ");
+  Serial.print("Time: ");
   Serial.println(myData.time);
 }
 
@@ -336,15 +346,20 @@ void updateLCD() {
     Serial.println("Switching to Next Image...");
             lcd.cls();
         lcd.setFont(c64enh);
-        lcd.printStr(ALIGN_CENTER, 28, (char*)myData.blood.c_str());
-        lcd.printStr(ALIGN_RIGHT, 5, (char*)myData.time.c_str());
+        lcd.printStr(ALIGN_CENTER, 28, myData.blood);
+        lcd.printStr(ALIGN_RIGHT, 5, myData.time);
     }
   } 
   else if (displayState) {
     lcd.drawBitmap(Black_Strip_Bitmap, 0, 0);  // Show Black_Strip_Bitmap
     Serial.println("Blinking Black Strip Bitmap");
     lcd.setFont(c64enh);
-    lcd.printStr(ALIGN_RIGHT, 5, (char*)myData.time.c_str());
+    lcd.printStr(ALIGN_RIGHT, 5, myData.time);
+  }
+  
+  // แสดงจุดเล็กๆ มุมซ้ายบน ถ้าเคยรับข้อมูลจาก Server แล้ว
+  if (data_in) {
+    lcd.fillRect(0, 0, 4, 4, 1);  // จุดเล็ก 4x4 pixel
   }
 
   lcd.display();
