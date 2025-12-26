@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <espnow.h>
 #include <ESP8266WebServer.h>
@@ -7,13 +8,13 @@
 
 ESP8266WebServer server(80);
 
-// Broadcast MAC Address - ส่งไปทุก Node ที่รอรับ
-uint8_t broadcastMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+// Broadcast MAC Address - ส่งไปทุก Node
+uint8_t receiverMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// Structure for ESP-NOW data (ใช้ char array แทน String สำหรับ ESP-NOW)
+// Structure for ESP-NOW data
 typedef struct struct_message {
-  char time[6];    // "HH:MM" + null terminator
-  char blood[10];  // ค่าน้ำตาล + null terminator
+  String time;
+  String blood;
 } struct_message;
 
 struct_message myData;
@@ -24,6 +25,7 @@ void handleRoot();
 void handleSubmit();
 void switchToESPNow();
 void sendData();
+bool isValidTimeFormat(String timeStr);
 
 // Callback when ESP-NOW data is sent
 void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus) {
@@ -350,7 +352,7 @@ void handleRoot() {
                 "</div>"
                 
                 "<div class='time-row'>"
-                "<input type='text' id='timeInput' class='time-input' placeholder='Lab Time (HH:MM)' pattern='[0-9]{2}:[0-9]{2}'>"
+                "<input type='text' id='timeInput' class='time-input' placeholder='HH:MM' pattern='[0-9]{2}[:\\.][0-9]{2}'>\n"
                 "<button class='now-button' onclick='setCurrentTime()'>NOW</button>"
                 "</div>"
                 
@@ -430,7 +432,7 @@ void handleRoot() {
                 "  const now = new Date();"
                 "  const hours = String(now.getHours()).padStart(2, '0');"
                 "  const minutes = String(now.getMinutes()).padStart(2, '0');"
-                "  timeInput.value = hours + ':' + minutes;"
+                "  timeInput.value = hours + ':' + minutes;\n"
                 "}"
                 
                 "function showModal() {"
@@ -552,16 +554,18 @@ void handleSubmit() {
       return;
     }
 
-    // Copy ค่าไปใส่ char array
-    strncpy(myData.blood, bloodStr.c_str(), sizeof(myData.blood) - 1);
-    myData.blood[sizeof(myData.blood) - 1] = '\0';
-    strncpy(myData.time, timeStr.c_str(), sizeof(myData.time) - 1);
-    myData.time[sizeof(myData.time) - 1] = '\0';
+    myData.blood = bloodStr;
+    myData.time = timeStr;
 
-    Serial.printf("Received Data -> Blood: %s, Lab Time: %s\n", myData.blood, myData.time);
+    Serial.printf("Received Data -> Blood: %s, Lab Time: %s\n", myData.blood.c_str(), myData.time.c_str());
 
     dataSubmitted = true;
     server.send(200, "text/plain", "Data Submitted Successfully");
+    
+    // รอให้ response ถูกส่งออกไปก่อน
+    delay(100);
+    server.handleClient();
+    delay(100);
     
     switchToESPNow();
   } else {
@@ -571,11 +575,12 @@ void handleSubmit() {
 
 // Time format validation function
 bool isValidTimeFormat(String timeStr) {
-  // Check if the string matches HH:MM format
+  // Check if the string matches HH:MM or HH.MM format
   if (timeStr.length() != 5) return false;
   
-  // Check if ':' is in the right place
-  if (timeStr.charAt(2) != ':') return false;
+  // Check if ':' or '.' is in the right place
+  char separator = timeStr.charAt(2);
+  if (separator != ':' && separator != '.') return false;
   
   // Extract hours and minutes
   int hours = timeStr.substring(0, 2).toInt();
@@ -604,20 +609,49 @@ void switchToESPNow() {
   esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
   esp_now_register_send_cb(OnDataSent);
   
-  // Add broadcast peer - ส่งไปทุก Node
-  esp_now_add_peer(broadcastMAC, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
+  // Add specific Node peer
+  esp_now_add_peer(receiverMAC, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
 
   sendData();
 }
 
 void sendData() {
   Serial.println("Broadcasting to all Nodes...");
-  Serial.printf("Sending ESP-NOW Data -> Blood: %s, Lab Time: %s\n", myData.blood, myData.time);
-  esp_now_send(broadcastMAC, (uint8_t *) &myData, sizeof(myData));
+  Serial.printf("Sending ESP-NOW Data -> Blood: '%s' (len=%d), Lab Time: '%s' (len=%d)\n", 
+                myData.blood.c_str(), myData.blood.length(), myData.time.c_str(), myData.time.length());
+  Serial.printf("Struct size: %d bytes\n", sizeof(myData));
+  
+  // แสดง Hex dump
+  Serial.print("Hex dump: ");
+  uint8_t* ptr = (uint8_t*)&myData;
+  for(size_t i = 0; i < sizeof(myData); i++) {
+    Serial.printf("%02X ", ptr[i]);
+  }
+  Serial.println();
+  
+  // ส่งซ้ำ 3 ครั้ง เพื่อเพิ่มโอกาสรับสำเร็จ
+  for (int i = 0; i < 3; i++) {
+    Serial.printf("Attempt %d/3...\n", i + 1);
+    esp_now_send(receiverMAC, (uint8_t *) &myData, sizeof(myData));
+    delay(500);  // รอ 500ms ระหว่างการส่งแต่ละครั้ง
+  }
 
-  Serial.println("Data Broadcast Sent! Restarting ESP...");
-  delay(3000);
-  ESP.restart();
+  Serial.println("Data Broadcast Sent! Switching back to AP mode...");
+  delay(1000);
+  
+  // ปิด ESP-NOW
+  esp_now_deinit();
+  
+  // Switch กลับไป AP mode
+  WiFi.disconnect();
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASS);
+  
+  // Start Web Server ใหม่
+  server.begin();
+  Serial.println("Back to Web Server mode!");
+  Serial.print("AP IP Address: ");
+  Serial.println(WiFi.softAPIP());
 }
 
 void loop() {
