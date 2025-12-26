@@ -264,6 +264,13 @@ bool displayState = false;   // False = Hide, True = Show
 bool otaMode = false;        // Tracks if OTA mode is active
 bool data_in = false;
 unsigned long bloodStartTime = 0;
+
+// Battery Variables
+int batteryPercent = 0;       // Battery percentage 0-100%
+#define BATT_ADC_PIN A0        // ADC pin for battery
+#define BATT_MIN_V 3.0         // Minimum battery voltage (0%)
+#define BATT_MAX_V 4.2         // Maximum battery voltage (100%)
+#define VOLTAGE_DIVIDER 2.0    // ถ้าใช้ voltage divider (เช่น 100K:100K = 2.0)
 // Function Prototypes
 void updateLCD();
 void handleOTA();
@@ -271,12 +278,14 @@ void checkButton();
 void checkOTAButton();
 void enterOTAMode();
 void displayUpdateMode();
+void readBattery();
 
 // Create Tasks
 Task taskUpdateLCD(500, TASK_FOREVER, &updateLCD);   // Blink LCD every 500ms
 Task taskHandleOTA(50, TASK_FOREVER, &handleOTA);    // Handle OTA every 50ms
 Task taskCheckButton(50, TASK_FOREVER, &checkButton); // Check button every 50ms
 Task taskCheckOTAButton(200, TASK_FOREVER, &checkOTAButton); // Check OTA button every 200ms
+Task taskReadBattery(5000, TASK_FOREVER, &readBattery); // Read battery every 5 seconds
 
 void setup() 
 {
@@ -314,12 +323,17 @@ void setup()
   runner.addTask(taskHandleOTA);
   runner.addTask(taskCheckButton);
   runner.addTask(taskCheckOTAButton);
+  runner.addTask(taskReadBattery);
 
   // Start Tasks
   taskUpdateLCD.enable();
   taskHandleOTA.enable();
   taskCheckButton.enable();
   taskCheckOTAButton.enable();
+  taskReadBattery.enable();
+  
+  // อ่านค่าแบตเตอรี่ครั้งแรก
+  readBattery();
 }
 
 void OnDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
@@ -361,6 +375,12 @@ void updateLCD() {
   if (data_in) {
     lcd.fillRect(0, 0, 4, 4, 1);  // จุดเล็ก 4x4 pixel
   }
+  
+  // แสดง Battery % หน้าเวลา (มุมขวาบน)
+  char battStr[8];
+  sprintf(battStr, "%d%%", batteryPercent);
+  lcd.setFont(c64enh);
+  lcd.printStr(0, 5, battStr);  // แสดงที่มุมซ้ายบน หน้าเวลา
 
   lcd.display();
   displayState = !displayState;  // Toggle state for next cycle
@@ -464,6 +484,32 @@ void displayUpdateMode() {
   lcd.printStr(ALIGN_CENTER, 45, (char*)ipStr.c_str());
   lcd.display();
   Serial.println("UPDATE MODE: " + WiFi.localIP().toString());
+}
+
+// Read Battery Voltage and Calculate Percentage
+void readBattery() {
+  // อ่านค่า ADC (ESP8266 ADC = 10-bit, 0-1023 สำหรับ 0-1V)
+  int adcValue = analogRead(BATT_ADC_PIN);
+  
+  // แปลงเป็นแรงดัน (ESP8266 ADC รองรับ 0-1V)
+  float voltage = (adcValue / 1023.0) * VOLTAGE_DIVIDER;
+  
+  // คำนวณเปอร์เซ็นต์แบตเตอรี่
+  batteryPercent = map(adcValue, 
+                        (BATT_MIN_V / VOLTAGE_DIVIDER) * 1023, 
+                        (BATT_MAX_V / VOLTAGE_DIVIDER) * 1023, 
+                        0, 100);
+  
+  // จำกัดค่าให้อยู่ในช่วง 0-100%
+  batteryPercent = constrain(batteryPercent, 0, 100);
+  
+  Serial.print("Battery ADC: ");
+  Serial.print(adcValue);
+  Serial.print(" | Voltage: ");
+  Serial.print(voltage);
+  Serial.print("V | Percent: ");
+  Serial.print(batteryPercent);
+  Serial.println("%");
 }
 
 void loop() {
