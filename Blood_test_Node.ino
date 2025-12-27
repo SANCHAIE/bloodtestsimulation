@@ -599,6 +599,17 @@ void checkOTAButton() {
   bool buttonState = digitalRead(OTA_BUTTON_PIN);
 
   if (buttonState == LOW && lastButtonState == HIGH) {
+    // ถ้าอยู่ใน sleep mode ให้ปลุกก่อน ไม่นับเวลา press
+    if (sleepMode) {
+      sleepMode = false;
+      lastActivityTime = millis();
+      digitalWrite(LCD_BACKLIGHT, backlightLevel == 1 ? LOW : HIGH);
+      Serial.println("Wake up from Sleep Mode (SW3)");
+      pressStartTime = millis();  // Reset เวลาเริ่มกด เพื่อไม่ให้นับต่อจากก่อนหน้า
+      lastButtonState = buttonState;
+      return;  // ออกทันที ไม่นับเวลากด
+    }
+    
     lastActivityTime = millis();  // Reset activity timer
     pressStartTime = millis(); // Start counting time
     infoShown = false;
