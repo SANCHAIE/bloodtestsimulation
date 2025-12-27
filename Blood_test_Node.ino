@@ -1,9 +1,11 @@
+#include <Arduino.h>
 #define LCD_BACKLIGHT  4
 #define LCD_CS         16
 #define LCD_DC         15
 #define LCD_RST        5
 #define BUTTON_PIN     2   // GPIO2 for normal button input
 #define OTA_BUTTON_PIN 0   // GPIO0 for OTA update trigger
+#define SW2_BUTTON_PIN 12  // GPIO12 for backlight brightness control
 
 #include <TaskScheduler.h>
 #include "ST7567_FB.h"
@@ -25,13 +27,16 @@
 #endif
 
 #include <ElegantOTA.h>
-#include "c64enh_font.h"
+#include "font8x8.h"  // Use local 8x8 font compatible with ST7567_FB
+#include <seg7_14x31bdig_font.h>  // Bold 7-segment digital font for blood value
+#include <small5x7_font.h>  // Small font for time
+
 // LCD Object
 ST7567_FB lcd(LCD_DC, LCD_RST, LCD_CS);
 
-const char* ssid = "AKKARACHAI_2.4G";
-const char* password = "Hi@0824191956";
-
+const char* ssid = "OTAUPATE";
+const char* password = "12345678";
+ 
 #if defined(ESP8266)
   ESP8266WebServer server(80);
 #elif defined(ESP32)
@@ -47,6 +52,18 @@ typedef struct struct_message {
 } struct_message;
 
 struct_message myData;
+
+// Function prototypes
+void OnDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len);
+void updateLCD();
+void handleOTA();
+void checkButton();
+void checkOTAButton();
+void enterOTAMode();
+void readBattery();
+void onOTAStart();
+void onOTAProgress(size_t current, size_t final);
+void onOTAEnd(bool success);
 // OTA Callbacks
 void onOTAStart() { Serial.println("OTA update started!"); }
 void onOTAProgress(size_t current, size_t final) { Serial.printf("OTA Progress: %u bytes of %u bytes\n", current, final); }
@@ -262,20 +279,31 @@ Scheduler runner;
 bool buttonPressed = false;  // Tracks if the button is pressed
 bool displayState = false;   // False = Hide, True = Show
 bool otaMode = false;        // Tracks if OTA mode is active
-bool data_in = false;
+bool infoMode = false;       // แสดง MAC Address และ RSSI
+bool sleepMode = false;      // Auto sleep mode (หน้าจอดับ)
+bool data_in = false;        // ข้อมูลใหม่เข้ามา (ยังไม่อ่าน)
+bool data_read = false;      // ข้อมูลถูกอ่านแล้ว (กดปุ่มแสดงแล้ว)
 unsigned long bloodStartTime = 0;
+unsigned long lastActivityTime = 0;  // เวลาล่าสุดที่มีกิจกรรม
+#define SLEEP_TIMEOUT 60000  // 60 วินาที = 1 นาที
 
 // Battery Variables
 int batteryPercent = 0;       // Battery percentage 0-100%
+int adcValue = 0;             // ADC reading value (0-1023)
 #define BATT_ADC_PIN A0        // ADC pin for battery
 #define BATT_MIN_V 3.0         // Minimum battery voltage (0%)
 #define BATT_MAX_V 4.2         // Maximum battery voltage (100%)
-#define VOLTAGE_DIVIDER 2.0    // ถ้าใช้ voltage divider (เช่น 100K:100K = 2.0)
+#define VOLTAGE_DIVIDER 5.0    // R7=300K, R8=75K → (300K+75K)/75K = 5.0
+
+// Backlight Variables
+int backlightLevel = 1;       // 0=Dim, 1=Bright (hardware supports only 2 levels)
+
 // Function Prototypes
 void updateLCD();
 void handleOTA();
 void checkButton();
 void checkOTAButton();
+void checkBacklightButton();
 void enterOTAMode();
 void displayUpdateMode();
 void readBattery();
@@ -285,6 +313,7 @@ Task taskUpdateLCD(500, TASK_FOREVER, &updateLCD);   // Blink LCD every 500ms
 Task taskHandleOTA(50, TASK_FOREVER, &handleOTA);    // Handle OTA every 50ms
 Task taskCheckButton(50, TASK_FOREVER, &checkButton); // Check button every 50ms
 Task taskCheckOTAButton(200, TASK_FOREVER, &checkOTAButton); // Check OTA button every 200ms
+Task taskCheckBacklightButton(50, TASK_FOREVER, &checkBacklightButton); // Check backlight button every 50ms
 Task taskReadBattery(5000, TASK_FOREVER, &readBattery); // Read battery every 5 seconds
 
 void setup() 
@@ -312,10 +341,18 @@ void setup()
   digitalWrite(LCD_BACKLIGHT, LOW);
   lcd.init();
   lcd.cls();
+  
+  // เริ่มต้น activity timer
+  lastActivityTime = millis();
 
   // Button Setup
   pinMode(BUTTON_PIN, INPUT_PULLUP); // Use internal pull-up resistor for main button
   pinMode(OTA_BUTTON_PIN, INPUT_PULLUP); // OTA trigger button
+  pinMode(SW2_BUTTON_PIN, INPUT_PULLUP); // Backlight control button
+  
+  // Backlight Setup
+  pinMode(LCD_BACKLIGHT, OUTPUT);
+  digitalWrite(LCD_BACKLIGHT, backlightLevel); // Set initial brightness (0=Dim, 1=Bright)
 
   // Register Tasks
   runner.init();
@@ -323,6 +360,7 @@ void setup()
   runner.addTask(taskHandleOTA);
   runner.addTask(taskCheckButton);
   runner.addTask(taskCheckOTAButton);
+  runner.addTask(taskCheckBacklightButton);
   runner.addTask(taskReadBattery);
 
   // Start Tasks
@@ -330,6 +368,7 @@ void setup()
   taskHandleOTA.enable();
   taskCheckButton.enable();
   taskCheckOTAButton.enable();
+  taskCheckBacklightButton.enable();
   taskReadBattery.enable();
   
   // อ่านค่าแบตเตอรี่ครั้งแรก
@@ -337,50 +376,150 @@ void setup()
 }
 
 void OnDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
-  memcpy(&myData, incomingData, sizeof(myData));
-  data_in = true;
+  // Server ส่ง String object มา ต้อง parse เอง
+  // จาก hex dump: time อยู่ที่ byte 0-5, blood อยู่ที่ byte 12-15
+  
+  // Clear old data
+  memset(myData.time, 0, sizeof(myData.time));
+  memset(myData.blood, 0, sizeof(myData.blood));
+  
+  // Copy time (first 6 bytes)
+  if (len >= 6) {
+    strncpy(myData.time, (char*)incomingData, 5);
+    myData.time[5] = '\0';
+  }
+  
+  // Copy blood (starting at byte 12)
+  if (len >= 16) {
+    strncpy(myData.blood, (char*)(incomingData + 12), 9);
+    myData.blood[9] = '\0';
+  }
+  
+  data_in = true;   // ข้อมูลใหม่เข้ามา
+  data_read = false; // ยังไม่ได้อ่าน
+  lastActivityTime = millis();  // Reset activity timer
+  if (sleepMode) {
+    sleepMode = false;
+    digitalWrite(LCD_BACKLIGHT, backlightLevel == 1 ? LOW : HIGH);
+    Serial.println("Wake up from Sleep Mode - New Data");
+  }
   Serial.print("Bytes received: ");
   Serial.println(len);
-  Serial.print("Blood: ");
-  Serial.println(myData.blood);
-  Serial.print("Time: ");
-  Serial.println(myData.time);
+  
+  // Debug: แสดง hex dump ของข้อมูลที่รับ
+  Serial.print("Hex dump: ");
+  for(int i = 0; i < len; i++) {
+    Serial.printf("%02X ", incomingData[i]);
+  }
+  Serial.println();
+  
+  Serial.print("Blood: '");
+  Serial.print(myData.blood);
+  Serial.println("'");
+  Serial.print("Time: '");
+  Serial.print(myData.time);
+  Serial.println("'");
+  
+  // Debug: แสดงความยาวของ string
+  Serial.printf("Blood length: %d, Time length: %d\n", strlen(myData.blood), strlen(myData.time));
 }
 
 // LCD Update Task
 void updateLCD() {
   if (otaMode) return; // Do nothing if in OTA mode
 
+  // ตรวจสอบ Auto Sleep
+  if (!sleepMode && millis() - lastActivityTime > SLEEP_TIMEOUT) {
+    sleepMode = true;
+    digitalWrite(LCD_BACKLIGHT, HIGH);  // ปิด backlight
+    Serial.println("Entering Sleep Mode...");
+  }
+
   lcd.cls();  // Clear screen before updating
+
+  // ถ้าอยู่ใน sleep mode แสดงหน้าจอว่าง
+  if (sleepMode) {
+    lcd.display();
+    return;
+  }
+
+  if (infoMode) {
+    // แสดง MAC Address และ WiFi RSSI
+    lcd.setFont(font8x8);
+    
+    // MAC Address (แบ่งเป็น 2 บรรทัด)
+    String mac = WiFi.macAddress();
+    lcd.printStr(ALIGN_CENTER, 5, (char*)"MAC Address:");
+    // บรรทัด 1: AA:BB:CC
+    lcd.printStr(ALIGN_CENTER, 15, (char*)mac.substring(0, 8).c_str());
+    // บรรทัด 2: DD:EE:FF
+    lcd.printStr(ALIGN_CENTER, 25, (char*)mac.substring(9).c_str());
+    
+    // WiFi RSSI (Signal Strength)
+    int rssi = WiFi.RSSI();
+    char rssiStr[32];
+    sprintf(rssiStr, "RSSI: %d dBm", rssi);
+    lcd.printStr(ALIGN_CENTER, 40, rssiStr);
+    
+    // แสดงคุณภาพสัญญาณ
+    char qualityStr[20];
+    if (rssi > -50) sprintf(qualityStr, "Excellent");
+    else if (rssi > -60) sprintf(qualityStr, "Good");
+    else if (rssi > -70) sprintf(qualityStr, "Fair");
+    else sprintf(qualityStr, "Weak");
+    lcd.printStr(ALIGN_CENTER, 53, qualityStr);
+    
+    lcd.display();
+    return;
+  }
 
   if (buttonPressed) {
     lcd.drawBitmap(Blood, 0, 0);  // Show Blood bitmap
     Serial.println("Showing Blood Bitmap");
     if (millis() - bloodStartTime >= 5000) {
-    Serial.println("Switching to Next Image...");
-            lcd.cls();
-        lcd.setFont(c64enh);
-        lcd.printStr(ALIGN_CENTER, 28, myData.blood);
-        lcd.printStr(ALIGN_RIGHT, 5, myData.time);
+      Serial.println("Switching to Next Image...");
+      lcd.cls();
+      
+      // Mark data as read
+      data_in = false;   // เคลียร์ checkmark
+      data_read = true;  // แสดง R (Read)
+      
+      // Show blood value with bold 7-segment font + unit
+      lcd.setFont(Seg7_14x31b);
+      lcd.printStr(ALIGN_CENTER, 16, myData.blood);
+      lcd.setFont(font8x8);
+      lcd.printStr(ALIGN_RIGHT, 50, (char*)"mg/dL");
+      
+      // Show time with small font
+      lcd.setFont(Small5x7PL);
+      lcd.printStr(ALIGN_RIGHT, 2, myData.time);
     }
   } 
   else if (displayState) {
     lcd.drawBitmap(Black_Strip_Bitmap, 0, 0);  // Show Black_Strip_Bitmap
     Serial.println("Blinking Black Strip Bitmap");
-    lcd.setFont(c64enh);
-    lcd.printStr(ALIGN_RIGHT, 5, myData.time);
+    // ไม่แสดงเวลาใน black strip mode
   }
   
-  // แสดงจุดเล็กๆ มุมซ้ายบน ถ้าเคยรับข้อมูลจาก Server แล้ว
+  // แสดง status icon
   if (data_in) {
-    lcd.fillRect(0, 0, 4, 4, 1);  // จุดเล็ก 4x4 pixel
+    // Draw checkmark icon มุมซ้ายบน (ข้อมูลใหม่ยังไม่อ่าน)
+    lcd.fillRect(3, 2, 2, 4, 1);   // ขาซ้าย
+    lcd.fillRect(5, 6, 2, 2, 1);   // มุม
+    lcd.fillRect(7, 3, 2, 5, 1);   // ขาขวา
+  } else if (data_read) {
+    // แสดง "R" ชิดกับเวลา (มุมขวาบน) - อ่านแล้ว
+    lcd.setFont(font8x8);
+    lcd.printStr(ALIGN_RIGHT - 30, 1, (char*)"R");  // หน้าเวลาเล็กน้อย
   }
   
-  // แสดง Battery % หน้าเวลา (มุมขวาบน)
-  char battStr[8];
-  sprintf(battStr, "%d%%", batteryPercent);
-  lcd.setFont(c64enh);
-  lcd.printStr(0, 5, battStr);  // แสดงที่มุมซ้ายบน หน้าเวลา
+  // แสดง Battery % หน้าเวลา (มุมขวาบน) - ถ้า ADC >= 50 เท่านั้น
+  if (adcValue >= 50) {
+    char battStr[8];
+    sprintf(battStr, "%d%%", batteryPercent);
+    lcd.setFont(font8x8);
+    lcd.printStr(0, 5, battStr);  // แสดงที่มุมซ้ายบน หน้าเวลา
+  }
 
   lcd.display();
   displayState = !displayState;  // Toggle state for next cycle
@@ -401,6 +540,17 @@ void checkButton() {
   bool buttonState = digitalRead(BUTTON_PIN);
 
   if (buttonState == LOW && lastButtonState == HIGH) {
+    // Wake up from sleep mode
+    if (sleepMode) {
+      sleepMode = false;
+      lastActivityTime = millis();
+      digitalWrite(LCD_BACKLIGHT, backlightLevel == 1 ? LOW : HIGH);
+      Serial.println("Wake up from Sleep Mode");
+      lastButtonState = buttonState;
+      return;
+    }
+    
+    lastActivityTime = millis();  // Reset activity timer
     Serial.println("Button Pressed! Showing Blood Bitmap.");
     buttonPressed = true;
     bloodStartTime = millis(); // Start timer for 5 seconds
@@ -413,19 +563,74 @@ void checkButton() {
   lastButtonState = buttonState;
 }
 
-// Check OTA Button Task
+// Check Backlight Button Task (SW2)
+void checkBacklightButton() {
+  static bool lastButtonState = HIGH;
+  bool buttonState = digitalRead(SW2_BUTTON_PIN);
+
+  if (buttonState == LOW && lastButtonState == HIGH) {
+    // Wake up from sleep mode
+    if (sleepMode) {
+      sleepMode = false;
+      lastActivityTime = millis();
+      digitalWrite(LCD_BACKLIGHT, backlightLevel == 1 ? LOW : HIGH);
+      Serial.println("Wake up from Sleep Mode");
+      lastButtonState = buttonState;
+      return;
+    }
+    
+    lastActivityTime = millis();  // Reset activity timer
+    // Toggle between 2 brightness levels: 0 (LOW/Dim) <-> 1 (HIGH/Bright)
+    backlightLevel = 1 - backlightLevel;  // Toggle between 0 and 1
+    digitalWrite(LCD_BACKLIGHT, backlightLevel);
+    
+    Serial.print("Backlight changed to: ");
+    Serial.println(backlightLevel ? "BRIGHT" : "DIM");
+  }
+
+  lastButtonState = buttonState;
+}
+
+// Check OTA Button Task (GPIO0/SW3)
 void checkOTAButton() {
   static unsigned long pressStartTime = 0;
   static bool lastButtonState = HIGH;
+  static bool infoShown = false;
   bool buttonState = digitalRead(OTA_BUTTON_PIN);
 
   if (buttonState == LOW && lastButtonState == HIGH) {
+    // Wake up from sleep mode
+    if (sleepMode) {
+      sleepMode = false;
+      lastActivityTime = millis();
+      digitalWrite(LCD_BACKLIGHT, backlightLevel == 1 ? LOW : HIGH);
+      Serial.println("Wake up from Sleep Mode");
+      lastButtonState = buttonState;
+      return;
+    }
+    
+    lastActivityTime = millis();  // Reset activity timer
     pressStartTime = millis(); // Start counting time
+    infoShown = false;
+  }
+  else if (buttonState == LOW && lastButtonState == LOW) {
+    // กดค้าง 3 วินาที แสดง MAC + RSSI
+    if (!infoShown && millis() - pressStartTime >= 3000) {
+      infoMode = true;
+      infoShown = true;
+      Serial.println("Showing MAC Address and WiFi RSSI...");
+    }
   }
   else if (buttonState == HIGH && lastButtonState == LOW) {
-    if (millis() - pressStartTime >= 5000) { // Button held for 5 sec
+    unsigned long pressDuration = millis() - pressStartTime;
+    
+    if (pressDuration >= 5000) { // กดค้าง 5 วิ = OTA Mode
       enterOTAMode();
     }
+    else if (pressDuration < 3000) { // ปล่อยก่อน 3 วิ = ปิด info
+      infoMode = false;
+    }
+    // ถ้าปล่อยหลัง 3 วิ แต่ไม่ถึง 5 วิ = ให้ info mode ค้างไว้
   }
 
   lastButtonState = buttonState;
@@ -478,8 +683,8 @@ void enterOTAMode() {
 void displayUpdateMode() {
   String ipStr = WiFi.localIP().toString() + "/"+"update";
   lcd.cls();
-  lcd.setFont(c64enh);
-  lcd.printStr(ALIGN_CENTER, 28, "UPDATE MODE:");
+  lcd.setFont(font8x8);
+  lcd.printStr(ALIGN_CENTER, 28, (char*)"UPDATE MODE:");
   lcd.printStr(ALIGN_CENTER, 5, (char*)WiFi.macAddress().c_str());
   lcd.printStr(ALIGN_CENTER, 45, (char*)ipStr.c_str());
   lcd.display();
@@ -488,25 +693,30 @@ void displayUpdateMode() {
 
 // Read Battery Voltage and Calculate Percentage
 void readBattery() {
-  // อ่านค่า ADC (ESP8266 ADC = 10-bit, 0-1023 สำหรับ 0-1V)
-  int adcValue = analogRead(BATT_ADC_PIN);
+  // อ่านค่า ADC หลายครั้งแล้ว average (ESP8266 ADC = 10-bit, 0-1023 สำหรับ 0-1V)
+  long adcSum = 0;
+  for (int i = 0; i < 10; i++) {
+    adcSum += analogRead(BATT_ADC_PIN);
+    delay(10);
+  }
+  adcValue = adcSum / 10;
   
   // แปลงเป็นแรงดัน (ESP8266 ADC รองรับ 0-1V)
-  float voltage = (adcValue / 1023.0) * VOLTAGE_DIVIDER;
+  float adcVoltage = adcValue / 1023.0;  // Voltage ที่ ADC เห็น (0-1V)
+  float voltage = adcVoltage * VOLTAGE_DIVIDER;  // Voltage จริงของ battery
   
   // คำนวณเปอร์เซ็นต์แบตเตอรี่
-  batteryPercent = map(adcValue, 
-                        (BATT_MIN_V / VOLTAGE_DIVIDER) * 1023, 
-                        (BATT_MAX_V / VOLTAGE_DIVIDER) * 1023, 
-                        0, 100);
+  batteryPercent = ((voltage - BATT_MIN_V) / (BATT_MAX_V - BATT_MIN_V)) * 100;
   
   // จำกัดค่าให้อยู่ในช่วง 0-100%
   batteryPercent = constrain(batteryPercent, 0, 100);
   
   Serial.print("Battery ADC: ");
   Serial.print(adcValue);
-  Serial.print(" | Voltage: ");
-  Serial.print(voltage);
+  Serial.print(" | ADC Voltage: ");
+  Serial.print(adcVoltage, 3);
+  Serial.print("V | Battery: ");
+  Serial.print(voltage, 2);
   Serial.print("V | Percent: ");
   Serial.print(batteryPercent);
   Serial.println("%");
