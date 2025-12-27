@@ -490,7 +490,7 @@ void updateLCD() {
       lcd.setFont(font8x8);
       lcd.printStr(ALIGN_RIGHT, 50, (char*)"mg/dL");
       
-      // Show time with small font
+      // Show time on top right
       lcd.setFont(Small5x7PL);
       lcd.printStr(ALIGN_RIGHT, 2, myData.time);
     }
@@ -508,17 +508,18 @@ void updateLCD() {
     lcd.fillRect(5, 6, 2, 2, 1);   // มุม
     lcd.fillRect(7, 3, 2, 5, 1);   // ขาขวา
   } else if (data_read) {
-    // แสดง "R" ชิดกับเวลา (มุมขวาบน) - อ่านแล้ว
-    lcd.setFont(font8x8);
-    lcd.printStr(ALIGN_RIGHT - 30, 1, (char*)"R");  // หน้าเวลาเล็กน้อย
+    // แสดง "R" มุมซ้ายบน ข้าง checkmark
+    lcd.setFont(Small5x7PL);
+    lcd.printStr(12, 2, (char*)"R");  // ข้าง checkmark (x=12, y=2)
   }
   
-  // แสดง Battery % หน้าเวลา (มุมขวาบน) - ถ้า ADC >= 50 เท่านั้น
+  // แสดง Battery % ก่อนเวลา (ด้านบนขวา) - แสดงตลอดเวลา
+  // แสดงเฉพาะเมื่อ ADC >= 50 เพื่อหลีกเลี่ยงการแสดงค่าผิดพลาดจากบอร์ดที่ ADC มีปัญหา
   if (adcValue >= 50) {
     char battStr[8];
     sprintf(battStr, "%d%%", batteryPercent);
-    lcd.setFont(font8x8);
-    lcd.printStr(0, 5, battStr);  // แสดงที่มุมซ้ายบน หน้าเวลา
+    lcd.setFont(Small5x7PL);
+    lcd.printStr(ALIGN_RIGHT - 32, 2, battStr);  // %แบต ก่อนเวลา
   }
 
   lcd.display();
@@ -544,8 +545,11 @@ void checkButton() {
     if (sleepMode) {
       sleepMode = false;
       lastActivityTime = millis();
-      digitalWrite(LCD_BACKLIGHT, backlightLevel == 1 ? LOW : HIGH);
-      Serial.println("Wake up from Sleep Mode");
+      digitalWrite(LCD_BACKLIGHT, backlightLevel);  // ใช้ backlightLevel โดยตรง
+      Serial.println("Wake up from Sleep Mode (SW1)");
+      // ปลุกแล้วแสดงค่าน้ำตาลเลย (UX ดีกว่า)
+      buttonPressed = true;
+      bloodStartTime = millis();
       lastButtonState = buttonState;
       return;
     }
@@ -573,8 +577,8 @@ void checkBacklightButton() {
     if (sleepMode) {
       sleepMode = false;
       lastActivityTime = millis();
-      digitalWrite(LCD_BACKLIGHT, backlightLevel == 1 ? LOW : HIGH);
-      Serial.println("Wake up from Sleep Mode");
+      digitalWrite(LCD_BACKLIGHT, backlightLevel);  // ใช้ backlightLevel โดยตรง
+      Serial.println("Wake up from Sleep Mode (SW2)");
       lastButtonState = buttonState;
       return;
     }
@@ -598,18 +602,14 @@ void checkOTAButton() {
   static bool infoShown = false;
   bool buttonState = digitalRead(OTA_BUTTON_PIN);
 
+  // ถ้าอยู่ใน sleep mode ไม่ทำอะไร แค่ update lastButtonState
+  // ให้ใช้ SW1 หรือ SW2 ในการปลุกแทน
+  if (sleepMode) {
+    lastButtonState = buttonState;
+    return;
+  }
+
   if (buttonState == LOW && lastButtonState == HIGH) {
-    // ถ้าอยู่ใน sleep mode ให้ปลุกก่อน ไม่นับเวลา press
-    if (sleepMode) {
-      sleepMode = false;
-      lastActivityTime = millis();
-      digitalWrite(LCD_BACKLIGHT, backlightLevel == 1 ? LOW : HIGH);
-      Serial.println("Wake up from Sleep Mode (SW3)");
-      pressStartTime = millis();  // Reset เวลาเริ่มกด เพื่อไม่ให้นับต่อจากก่อนหน้า
-      lastButtonState = buttonState;
-      return;  // ออกทันที ไม่นับเวลากด
-    }
-    
     lastActivityTime = millis();  // Reset activity timer
     pressStartTime = millis(); // Start counting time
     infoShown = false;
