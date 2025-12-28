@@ -6,6 +6,17 @@
 #define AP_SSID "Blood_Simulator"
 #define AP_PASS "12345678"  // Password for Access Point
 
+// Battery monitoring
+#define BATT_ADC_PIN A0
+#define BATT_MIN_V 3.0
+#define BATT_MAX_V 4.2
+#define VOLTAGE_DIVIDER 5.0
+
+int adcValue = 0;
+int batteryPercent = 0;
+unsigned long lastBatteryUpdate = 0;
+const unsigned long BATTERY_UPDATE_INTERVAL = 30000; // อัพเดทแบตทุก 30 วินาที
+
 ESP8266WebServer server(80);
 
 // Broadcast MAC Address - ส่งไปทุก Node
@@ -23,8 +34,10 @@ bool dataSubmitted = false;
 // Function Prototypes
 void handleRoot();
 void handleSubmit();
+void handleBattery();
 void switchToESPNow();
 void sendData();
+void readBattery();
 bool isValidTimeFormat(String timeStr);
 
 // Callback when ESP-NOW data is sent
@@ -40,6 +53,9 @@ void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus) {
 void setup() {
   Serial.begin(115200);
   
+  // อ่านค่าแบตเตอรี่ครั้งแรก
+  readBattery();
+  
   // Start Access Point
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASS);
@@ -50,6 +66,7 @@ void setup() {
   // Start Web Server
   server.on("/", HTTP_GET, handleRoot);
   server.on("/submit", HTTP_POST, handleSubmit);
+  server.on("/battery", HTTP_GET, handleBattery);
   server.begin();
   Serial.println("Web Server Started!");
 }
@@ -87,6 +104,16 @@ void handleRoot() {
                 "  margin-bottom: 20px;"
                 "  font-size: 24px;"
                 "  font-weight: bold;"
+                "  position: relative;"
+                "}"
+                ".battery-indicator {"
+                "  position: absolute;"
+                "  top: 15px;"
+                "  right: 15px;"
+                "  font-size: 14px;"
+                "  background-color: rgba(255,255,255,0.2);"
+                "  padding: 5px 10px;"
+                "  border-radius: 15px;"
                 "}"
                 ".result-display {"
                 "  background-color: #e0e0e0;"
@@ -203,6 +230,32 @@ void handleRoot() {
                 ".history-time {"
                 "  color: #666;"
                 "}"
+                ".resend-button {"
+                "  padding: 4px 10px;"
+                "  font-size: 12px;"
+                "  background-color: #3498db;"
+                "  color: white;"
+                "  border: none;"
+                "  border-radius: 4px;"
+                "  cursor: pointer;"
+                "  margin-left: 8px;"
+                "}"
+                ".resend-button:hover {"
+                "  background-color: #2980b9;"
+                "}"
+                ".random-button {"
+                "  padding: 10px 15px;"
+                "  font-size: 16px;"
+                "  background-color: #9b59b6;"
+                "  color: white;"
+                "  border: none;"
+                "  border-radius: 8px;"
+                "  cursor: pointer;"
+                "  flex: 1;"
+                "}"
+                ".random-button:hover {"
+                "  background-color: #8e44ad;"
+                "}"
                 ".preset-section {"
                 "  margin: 15px 0;"
                 "}"
@@ -316,7 +369,10 @@ void handleRoot() {
                 "</head>"
                 "<body>"
                 "<div class='container'>"
-                "<div class='app-title'>Blood Glucose Level Measurement</div>"
+                "<div class='app-title'>"
+                "Blood Glucose Level Measurement"
+                "<span id='batteryIndicator' class='battery-indicator'>---%</span>"
+                "</div>"
                 
                 "<div id='statusBar' class='status-bar'></div>"
                 
@@ -343,11 +399,9 @@ void handleRoot() {
                 "<div class='preset-section'>"
                 "<div class='preset-title'>Quick Preset</div>"
                 "<div class='preset-buttons'>"
-                "<button class='preset-button' onclick='setPreset(70)'>70</button>"
-                "<button class='preset-button' onclick='setPreset(100)'>100</button>"
-                "<button class='preset-button' onclick='setPreset(120)'>120</button>"
-                "<button class='preset-button' onclick='setPreset(150)'>150</button>"
-                "<button class='preset-button' onclick='setPreset(200)'>200</button>"
+                "<button class='preset-button' onclick='setPresetRange(90, 110)'>ก่อนอาหาร<br>(90-110)</button>"
+                "<button class='preset-button' onclick='setPresetRange(120, 140)'>หลังอาหาร<br>(120-140)</button>"
+                "<button class='random-button' onclick='randomBlood()'>🎲 Random</button>"
                 "</div>"
                 "</div>"
                 
@@ -464,12 +518,33 @@ void handleRoot() {
                 "  if (history.length > 5) history.pop();"
                 "  renderHistory();"
                 "}"
+                ""
+                "function setPresetRange(min, max) {"
+                "  const value = Math.floor(Math.random() * (max - min + 1)) + min;"
+                "  enteredNumber = value.toString();"
+                "  display.textContent = enteredNumber;"
+                "}"
+                ""
+                "function randomBlood() {"
+                "  const value = Math.floor(Math.random() * (180 - 70 + 1)) + 70;"
+                "  enteredNumber = value.toString();"
+                "  display.textContent = enteredNumber;"
+                "}"
+                ""
+                "function resendHistory(blood) {"
+                "  enteredNumber = blood;"
+                "  updateDisplay();"
+                "  setCurrentTime();"
+                "  showStatus('Ready to resend: ' + blood + ' mg/dL', 'success');"
+                "}"
                 
                 "function renderHistory() {"
                 "  historyList.innerHTML = history.map(item => "
                 "    '<div class=\"history-item\">' +"
                 "    '<span class=\"history-blood\">' + item.blood + ' mg/dL</span>' +"
-                "    '<span class=\"history-time\">' + item.time + '</span>' +"
+                "    '<span class=\"history-time\">' + item.time + "
+                "    '<button class=\"resend-button\" onclick=\"resendHistory(\\'' + item.blood + '\\')\">' +"
+                "    '↻ Resend</button></span>' +"
                 "    '</div>'"
                 "  ).join('');"
                 "}"
@@ -528,7 +603,20 @@ void handleRoot() {
                 "  displayValue.textContent = enteredNumber || '0';"
                 "}"
                 
+                "function updateBattery() {"
+                "  fetch('/battery')"
+                "  .then(response => response.json())"
+                "  .then(data => {"
+                "    document.getElementById('batteryIndicator').textContent = data.percent + '%';"
+                "  })"
+                "  .catch(error => {"
+                "    document.getElementById('batteryIndicator').textContent = '---%';"
+                "  });"
+                "}"
+                
                 "updateDisplay();"
+                "updateBattery();"
+                "setInterval(updateBattery, 30000);"  // อัพเดททุก 30 วินาที
                 "</script>"
                 "</body>"
                 "</html>";
@@ -652,6 +740,44 @@ void sendData() {
   Serial.println("Back to Web Server mode!");
   Serial.print("AP IP Address: ");
   Serial.println(WiFi.softAPIP());
+}
+
+// Read Battery Voltage and Calculate Percentage
+void readBattery() {
+  long adcSum = 0;
+  for (int i = 0; i < 10; i++) {
+    adcSum += analogRead(BATT_ADC_PIN);
+    delay(10);
+  }
+  adcValue = adcSum / 10;
+  
+  float adcVoltage = adcValue / 1023.0;
+  float voltage = adcVoltage * VOLTAGE_DIVIDER;
+  
+  batteryPercent = ((voltage - BATT_MIN_V) / (BATT_MAX_V - BATT_MIN_V)) * 100;
+  batteryPercent = constrain(batteryPercent, 0, 100);
+  
+  Serial.print("Battery ADC: ");
+  Serial.print(adcValue);
+  Serial.print(" | Voltage: ");
+  Serial.print(voltage, 2);
+  Serial.print("V | Percent: ");
+  Serial.print(batteryPercent);
+  Serial.println("%");
+}
+
+// Handle battery API endpoint
+void handleBattery() {
+  // อ่านค่าใหม่เฉพาะเมื่อครบ 30 วินาที เพื่อประหยัดแบต
+  unsigned long now = millis();
+  if (now - lastBatteryUpdate >= BATTERY_UPDATE_INTERVAL) {
+    readBattery();
+    lastBatteryUpdate = now;
+  }
+  // ใช้ค่าเดิมถ้ายังไม่ครบเวลา
+  String json = "{\"adc\":" + String(adcValue) + 
+                ",\"percent\":" + String(batteryPercent) + "}";
+  server.send(200, "application/json", json);
 }
 
 void loop() {
